@@ -1,0 +1,246 @@
+---
+title: "LendingClub data analysis and exploration"
+author: "Kim"
+output: html_document
+---
+
+#Lending Club:
+
+Lending Club (LC) is a peer to peer online lending platform. It is the world's largest marketplace connecting borrowers and investors, where consumers and small business owners lower the cost of their credit and enjoy a better experience than traditional bank lending, and investors earn attractive risk-adjusted returns.
+
+
+#Goal Objective
+Data exploration and analysis on the Lendingclub loan dataset.  Source:
+https://www.lendingclub.com/info/download-data.action
+
+##Loading dataset & library
+
+```{r,warning=FALSE}
+library(ggplot2)
+library(plotly)
+library(dplyr)
+library(DescTools)
+library(data.table)
+library(lubridate)
+
+dat = read.csv("LoanStats3a_securev1.csv", stringsAsFactors = FALSE, header = T, skip = 1)
+```
+
+##Data cleaning and remove NA/missing value
+
+```{r,warning=FALSE}
+
+## detect NA value in each column/variables
+na_count <- sapply(dat, function(y) sum(length(which(is.na(y)))))
+na_count <- as.data.frame(na_count)
+
+##define function to remove fields that consist more than 80% missing values/NA
+many_NA <- sapply(dat, function(x) {
+  coverage <- 1 - sum(is.na(x)) / length(x)
+  coverage < 0.8
+})
+
+dat <- dat[,many_NA==FALSE]
+
+#remove NA rows
+dat <- na.omit(dat)
+```
+   
+
+## data manipulation and groupin
+```{r,warning=F}
+library(stringr)
+
+dat$revol_util <- str_replace_all(dat$revol_util, "[%]", "")
+dat$revol_util <- as.numeric(dat$revol_util)
+dat$int_rate <- str_replace_all(dat$int_rate, "[%]", "")
+dat$int_rate <- as.numeric(dat$int_rate)
+
+## convert data format(dec-2011) to R readabale date format (2011-12-01)
+dat$issue_d <- dmy(paste0("01-",dat$issue_d))
+
+## identify rent
+dat$is_rent <- dat$home_ownership=="RENT"
+dat$is_rent <- as.numeric(dat$is_rent)
+
+# calculate fico average score, and group them into 8 groups
+dat$ficoavg <- (dat$fico_range_low+dat$fico_range_high)/2  
+dat$ficogroup<-cut(dat$ficoavg,c(640,670,700,730,760,790,820,850))
+
+# Grouping for Debt-to-income ratio
+dat$dti_group<-cut(dat$dti,breaks=10)
+
+## Grouping for annual-inc ratio
+dat$annual_inc_group<-cut(dat$annual_inc,c(0,30000,40000,50000,60000,70000,80000,90000,max(dat$annual_inc)))
+
+```
+   
+
+##Exploratory Data Analysis
+   
+###Loan amount issued across year
+
+```{r,warning =FALSE}
+loan_amnt_by_month <- aggregate(loan_amnt ~ issue_d, data = dat, sum)
+ggplot(loan_amnt_by_month, aes(issue_d, loan_amnt)) + geom_bar(stat = "identity") 
+```
+    
+
+### Loan amount issued across LC loan grade
+
+```{r,warning =FALSE}
+
+ggplot(dat, aes(loan_amnt, fill = grade)) + geom_histogram(bins = 50) + facet_grid(grade ~ .)
+
+```
+ 
+Loan grade of A,B,C has a higher rate of loan amount issued compare to loan grade of D,E,F.      
+
+### Purpose of loan
+
+```{r,warning =FALSE}
+df <- as.data.frame(table(dat$purpose))
+plot_ly(df, labels = Var1, values = Freq, type = "pie") %>%layout(title = "Purpose of loan")
+
+```
+
+    
+### Loan status
+
+```{r,warning =FALSE}
+df2 <- as.data.frame(table(dat$loan_status))
+plot_ly(df2, labels = Var1, values = Freq, type = "pie") %>% layout(title = "loan status")
+
+```
+    
+### Average FICO score
+
+```{r,warning =FALSE}
+df3 <- as.data.frame(table(dat$ficogroup))
+plot_ly(df3, labels = Var1, values = Freq, type = "pie") %>% layout(title = "Average FICO score")
+
+```
+   
+     
+### Average FICO score versus LC subgrade
+
+```{r,warning =FALSE}
+df4 <- dat %>%
+      group_by(sub_grade) %>%
+      summarise(mean_score = mean(ficoavg))
+df4 <- as.data.frame(df4)
+ggplot(df4,aes(sub_grade,mean_score))+geom_point(colour="blue", size = 4.5)
+```
+
+There is a correlation between Average FICO score and the LendingClub subgrade   
+   
+###Interest rate across different LC loan grade
+
+```{r,warning =FALSE}
+ggplot(dat, aes(int_rate, fill = grade)) + geom_density() + facet_grid(grade ~ .)
+```
+
+Loan grade were categorized based on risk:    
+Grade A = least risky, lowest interest rate,  wherease Grade G = most risky, highest interest rate   
+   
+
+# Let's define default loan category:
+
+```{r,warning =FALSE}
+
+# from loan_status, assign some indicator to default
+default_indicator <- c("Charged Off ", 
+                      "Default",
+                       "Does not meet the credit policy. Status:Charged Off",
+                       "Default Receiver")
+
+dat$is_default <- ifelse(dat$loan_status %in% default_indicator, 1,
+                     ifelse(dat$loan_status=="", NA, 0)
+)
+```
+   
+## Default rate across different LC subgrade
+
+```{r,warning =FALSE}
+df5 <- dat %>%
+    group_by(sub_grade) %>%
+      # mutate(default_count = sum(is_default=="1")) %>%
+    summarise(default_count = sum(is_default), number_of_loans=n(),default_rate= default_count/n())
+
+df5 <- as.data.frame(df5)
+g<- ggplot(df5,aes(number_of_loans,default_rate))+geom_point(aes(colour=sub_grade,size=default_rate))
+ggplotly(g)
+```
+
+(Default rate is in ratio, 0.15 = 15%)   There is a strong correlation between LC loan grade with default rate The default rate goes higher when the loan grade drop
+    
+## Default rate across different employment length
+```{r, echo=FALSE,warning =FALSE}
+dat %>%
+    group_by(emp_length) %>%
+    summarise(number_of_loans=n(),
+              default_count = sum(is_default), default_rate= default_count/n())
+
+```
+     
+## Default rate across delinquencies over the pass 2 years
+```{r, echo=FALSE,warning =FALSE}
+dat %>%
+    group_by(delinq_2yrs) %>%
+    summarise(number_of_loans=n(),
+              default_count = sum(is_default), default_rate= default_count/n())
+
+```
+     
+## Default rate across Debt-to-income ratio
+```{r, echo=FALSE,warning =FALSE}
+df6<- dat %>%
+    group_by(dti_group) %>%
+    summarise(number_of_loans=n(),
+              default_count = sum(is_default), default_rate= default_count/n())
+
+df6 <- as.data.frame(df6)
+ggplot(df6,aes(dti_group,default_rate,fill=default_rate))+geom_bar(stat="identity")
+```
+
+There is a correlation between default rate and debt-to-income ratio
+   
+## Default rate across Annual income
+```{r, echo=FALSE,warning =FALSE}
+df7<- dat %>%
+    group_by(annual_inc_group) %>%
+    summarise(number_of_loans=n(),
+              default_count = sum(is_default), default_rate= default_count/n())
+
+df7 <- as.data.frame(df7)
+
+ggplot(df7,aes(annual_inc_group,default_rate,fill=default_rate))+geom_bar(stat="identity")+theme(axis.text.x = element_text(angle=90, vjust=1))
+```
+
+There is minimium correlation between default rate versus annual income
+    
+## Default rate across Inquiries in the past 6 months
+```{r, echo=FALSE,warning =FALSE}
+df8<-dat %>%
+    group_by(inq_last_6mths) %>%
+    summarise(number_of_loans=n(),
+              default_count = sum(is_default), default_rate= default_count/n())
+
+df8<- as.data.frame(df8)
+
+ggplot(df8,aes(inq_last_6mths,default_rate,fill=default_rate))+geom_bar(stat="identity")
+```
+
+There is a strong correlation between Inquiries in the past 6 months versus default rate.
+
+   
+# Conclusion 
+
+Lending Club's data is a great source of information on personal credit. From the analysis above, we identify the potential feature used to predict default rate and bad loan. This include LC loan grade, inquiries in the past 6 months, Debt-to-income ratio.   
+
+Further exploration and work:  
+1) Building a credit model and see if we can predict reliably defaults   
+2) Building an interactive dashboard or predictive API for end-user application  
+3) Using elasticsearch & kibana dashboard to gain dynamic searching and visualization
+   
+   
